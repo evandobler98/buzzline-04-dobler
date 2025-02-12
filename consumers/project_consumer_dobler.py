@@ -9,10 +9,12 @@
 import os
 import json
 from collections import deque  # Use deque for efficient list operations
+from datetime import datetime  # Convert timestamps to readable format
 
 # Import external packages
 from dotenv import load_dotenv
 import matplotlib.pyplot as plt
+import numpy as np  # For smoothing data
 
 # Import local utility functions
 from utils.utils_consumer import create_kafka_consumer
@@ -54,11 +56,24 @@ plt.ion()  # Turn on interactive mode
 def update_chart():
     """Update the live chart with the latest sentiment trends."""
     ax.clear()
-    ax.plot(timestamps, sentiments, marker='o', linestyle='-', color='b')
+
+    # Convert deque to lists for plotting
+    time_labels = list(timestamps)
+    sentiment_values = list(sentiments)
+
+    # Plot raw sentiment values
+    ax.plot(time_labels, sentiment_values, marker='o', linestyle='-', color='b', label="Sentiment Score")
+
+    # Apply moving average smoothing if we have enough points
+    if len(sentiment_values) > 5:
+        smooth_sentiments = np.convolve(sentiment_values, np.ones(5)/5, mode='valid')
+        ax.plot(time_labels[-len(smooth_sentiments):], smooth_sentiments, linestyle='-', color='r', label="Smoothed")
+
     ax.set_xlabel("Time")
     ax.set_ylabel("Sentiment Score")
     ax.set_title("Sentiment Analysis Over Time")
     plt.xticks(rotation=45)
+    plt.legend()
     plt.tight_layout()
     plt.draw()
     plt.pause(0.01)
@@ -71,14 +86,39 @@ def process_message(message: str) -> None:
         message_dict = json.loads(message)
         logger.info(f"Processed JSON message: {message_dict}")
 
-        if isinstance(message_dict, dict):
-            timestamp = message_dict.get("timestamp", "unknown")
-            sentiment = float(message_dict.get("sentiment", 0))
+        # Validate message contains required fields
+        if not isinstance(message_dict, dict):
+            logger.error(f"Invalid message format: {message_dict}")
+            return
 
-            timestamps.append(timestamp)
-            sentiments.append(sentiment)
+        timestamp = message_dict.get("timestamp")
+        sentiment = message_dict.get("sentiment")
 
-            update_chart()
+        if timestamp is None or sentiment is None:
+            logger.warning(f"Missing data fields in message: {message_dict}")
+            return
+
+        # Convert timestamp to readable format if it's in Unix time
+        try:
+            timestamp = datetime.fromtimestamp(int(timestamp)).strftime("%H:%M:%S")
+        except ValueError:
+            logger.warning(f"Invalid timestamp value: {timestamp}")
+            return
+
+        # Convert sentiment to float safely
+        try:
+            sentiment = float(sentiment)
+        except ValueError:
+            logger.warning(f"Invalid sentiment value: {sentiment}")
+            return
+
+        # Append data for visualization
+        timestamps.append(timestamp)
+        sentiments.append(sentiment)
+
+        # Update the live chart
+        update_chart()
+
     except json.JSONDecodeError:
         logger.error(f"Invalid JSON message: {message}")
     except Exception as e:
@@ -106,6 +146,7 @@ def main() -> None:
         logger.error(f"Error while consuming messages: {e}")
     finally:
         consumer.close()
+        plt.close(fig)  # Ensure figure closes properly
         logger.info(f"Kafka consumer for topic '{topic}' closed.")
 
     logger.info(f"END consumer for topic '{topic}' and group '{group_id}'")
